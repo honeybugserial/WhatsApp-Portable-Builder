@@ -6,13 +6,6 @@
 # Usage:
 #   python buildWhatsApp-Portable.py [icon.ico]
 #
-# - If you supply a path to an .ico file as the first argument,
-#   it will be copied into WhatsApp-Electron/icon.ico and passed
-#   to @electron/packager via --icon=icon.ico.
-#
-#   Example:
-#       python buildWhatsApp-Portable.py icon.ico
-#
 # - If you run it with no arguments, the build will work but the
 #   packaged EXE will not have a custom icon.
 #
