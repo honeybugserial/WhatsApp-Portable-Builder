@@ -1,8 +1,60 @@
 #!/usr/bin/env python3
-# make_whatsapp_portable.py — build a portable Electron wrapper for WhatsApp Web
+# buildWhatsApp-Portable.py — build a portable Electron wrapper for WhatsApp Web
+# ============================================================
+# WhatsApp Portable Builder
+#
+# Usage:
+#   python buildWhatsApp-Portable.py [icon.ico]
+#
+# - If you supply a path to an .ico file as the first argument,
+#   it will be copied into WhatsApp-Electron/icon.ico and passed
+#   to @electron/packager via --icon=icon.ico.
+#
+#   Example:
+#       python buildWhatsApp-Portable.py icon.ico
+#
+# - If you run it with no arguments, the build will work but the
+#   packaged EXE will not have a custom icon.
+#
+# Requirements:
+#   pip install -r requirements.txt   (rich, pyfiglet)
+#   Node.js + npm (script can bootstrap if missing)
+#   npx @electron/packager (pulled automatically)
+#
+# ============================================================
 
 import ctypes, json, os, shutil, subprocess, sys, tempfile, urllib.request, zipfile
 from pathlib import Path
+from rich.panel import Panel
+from rich.text import Text
+from rich.prompt import Prompt
+
+
+try:
+    from rich.console import Console
+    import pyfiglet
+    from time import sleep
+    from datetime import datetime
+    import os
+
+    console = Console()
+    def splash_screen(title, ascii_font, timestamp, sleep_time=5):
+        os.system('cls' if os.name == 'nt' else 'clear')
+        console.rule(f"[bold cyan]{title}[/bold cyan]")
+        ascii_art = pyfiglet.figlet_format(title, font=ascii_font)
+        console.print(ascii_art, style="bold green")
+        console.print(f"[dim]Started at: {timestamp}[/]\n")
+        console.rule(f"[bold cyan] LAUNCHING [/bold cyan]")
+        with console.status("[bold yellow]Loading...[/]", spinner="dots"):
+            sleep(sleep_time)
+except Exception as _splash_err:
+    # If rich/pyfiglet not available, no-op splash
+    def splash_screen(title, ascii_font, timestamp, sleep_time=5):
+        import os, time
+        os.system('cls' if os.name == 'nt' else 'clear')
+        console.print(title)
+        console.print(f"[dim]Started at: {timestamp}[/]")
+        time.sleep(1)
 
 APP_DIR = Path("WhatsApp-Electron")
 APP_NAME = "WhatsAppPortabler"
@@ -22,8 +74,10 @@ def which_any(names):
     return None
 
 def run(cmd_list, cwd=None, check=True):
-    print(f"    $ {' '.join(cmd_list)}")
-    return subprocess.run(cmd_list, cwd=cwd, check=check)
+    console.print(f"[dim]$ {' '.join(cmd_list)}[/dim]")
+    with console.status("[bold yellow]Running...[/]", spinner="dots"):
+        return subprocess.run(cmd_list, cwd=cwd, check=check)
+
 
 def check_output(cmd_list, cwd=None):
     return subprocess.check_output(cmd_list, cwd=cwd, text=True).strip()
@@ -37,21 +91,29 @@ def fetch(url, dest: Path):
 def prompt_yes_no(question, default_yes=True):
     d = "Y/n" if default_yes else "y/N"
     while True:
-        ans = input(f"{question} [{d}]: ").strip().lower()
-        if not ans: return default_yes
-        if ans in ("y","yes"): return True
-        if ans in ("n","no"):  return False
-        print("Please answer y/n.")
-
+        console.print(f"[bold cyan]{question}[/] [{d}] ", end='')
+        ans = input().strip().lower()
+        if not ans:
+            return default_yes
+        if ans in ("y","yes"):
+            return True
+        if ans in ("n","no"):
+            return False
+        console.print("[yellow]Please answer y/n.[/]")
 def section(title):
-    print("\n" + "="*60)
-    print(f"[ {title} ]")
-    print("="*60)
+    console.rule(f"[bold cyan]{title}[/bold cyan]")
 
-def info(msg): print(f"  [i] {msg}")
-def ok(msg):   print(f"  [OK] {msg}")
-def warn(msg): print(f"  [!] {msg}")
-def fail(msg): print(f"  [X] {msg}")
+def info(msg):
+    console.print(f"[bold blue]ℹ[/] {msg}")
+
+def ok(msg):
+    console.print(f"[bold green]✔[/] {msg}")
+
+def warn(msg):
+    console.print(f"[bold yellow]![/] {msg}")
+
+def fail(msg):
+    console.print(f"[bold red]✖[/] {msg}")
 
 # ---------------- Node/npm buttstrappers ----------------
 def parse_ver_tuple(vstr): return tuple(int(x) for x in vstr.split("."))
@@ -125,6 +187,7 @@ def scaffold(allow_media:bool, icon_src:Path|None):
     main_js=f"""const {{ app, BrowserWindow, shell, session }} = require("electron");
 const path = require("path");
 if (!app.requestSingleInstanceLock()) app.quit();
+app.setAppUserModelId("WhatsAppPortabler");
 app.setPath("userData", path.join(process.cwd(), "Data"));
 function createWindow() {{
   const win = new BrowserWindow({{
@@ -139,12 +202,16 @@ function createWindow() {{
   const ua = "{UA_STRING}";
   win.webContents.setUserAgent(ua);
   win.loadURL("https://web.whatsapp.com");
-  win.webContents.setWindowOpenHandler(({{
-    url
-  }}) => {{ shell.openExternal(url); return {{ action: "deny" }}; }});
+  win.webContents.setWindowOpenHandler(({{url}}) => {{ shell.openExternal(url); return {{ action: "deny" }}; }});
+  // Block in-app navigations away from WhatsApp
+  win.webContents.on("will-navigate", (e, url) => {{
+    if (!url.startsWith("https://web.whatsapp.com/")) {{ e.preventDefault(); shell.openExternal(url); }}
+  }});
   const allowMedia = {str(allow_media).lower()};
   session.defaultSession.setPermissionRequestHandler((wc, permission, cb) => {{
     if (permission === "media") return cb(allowMedia);
+    if (permission === "notifications") return cb(true);
+    if (permission === "display-capture") return cb(true);
     cb(false);
   }});
 }}
@@ -153,8 +220,7 @@ app.on("second-instance", () => {{
   const w = BrowserWindow.getAllWindows()[0];
   if (w) w.focus();
 }});
-app.on("window-all-closed", () => app.quit());
-"""
+app.on("window-all-closed", () => app.quit());"""
     preload_js="// Minimal preload; no Node exposure.\n"
     write_utf8(APP_DIR/"package.json",pkg_json)
     write_utf8(APP_DIR/"main.js",main_js)
@@ -177,7 +243,7 @@ def build(open_explorer=True):
         icon_arg=["--icon=icon.ico"]
     dist=APP_DIR/"dist"
     if dist.exists(): shutil.rmtree(dist)
-    cmd=[npx,"@electron/packager",".",APP_NAME,"--platform=win32","--arch=x64","--out","dist","--overwrite","--prune=true","--asar"]+icon_arg
+    cmd=[npx,"@electron/packager",".",APP_NAME,"--platform=win32","--arch=x64","--out","dist","--overwrite","--asar"]+icon_arg
     run(cmd,cwd=APP_DIR)
     out=APP_DIR/"dist"/f"{APP_NAME}-win32-x64"
     if not out.exists(): sys.exit("Packaging failed.")
@@ -187,16 +253,19 @@ def build(open_explorer=True):
     # Open dist folder in Explorer
     if open_explorer:
         try:
-            section("Opening dist folder in Explorer")
+            section("Opening dist folder in Explorer"); info("Opening Explorer to the output directory")
             os.startfile(str(out))  # Windows-only
         except Exception as e:
             warn(f"Could not open Explorer automatically: {e}")
 
 # ---------------- mains ----------------
 def main():
-    print("============================================================")
-    print(" WhatsApp Portable Builderings")
-    print("============================================================")
+        # Splash screen on launch
+    try:
+        splash_screen("WHATSAPP PORTABLERS BUILDIERGS", "modular", __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 5)
+    except Exception as _:
+        pass
+    section("WhatsApp Portable Builderings")
     allow_media=prompt_yes_no("Allow mic/camera inside the app?",default_yes=True)
     section("Checking prerequisites")
     ensure_node()
